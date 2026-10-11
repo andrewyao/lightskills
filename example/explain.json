@@ -1,0 +1,167 @@
+{
+  "concept": "How getUser loads a user",
+  "summary": "`getUser(id)` is the only way the app loads a user. It checks a 60-second cache, joins a request that is already in flight, and otherwise fetches with retries. The parts that matter most are the failure paths: one failed request rejects every caller waiting on it, and nothing about a failure is remembered.",
+  "sections": [
+    {
+      "id": "entry",
+      "label": "getUser: the three-step lookup",
+      "kind": "function",
+      "importance": "core",
+      "summary": "Cache first, then the in-flight map, then the network.",
+      "explanation": "Every call goes through the same three checks, in this order:\n\n- `cache.get(userId)`. A hit returns at once. The check is `!== undefined`, so falsy values like `0` or `\"\"` still count as hits.\n- `inflight.has(userId)`. If another call already started a fetch for this id, return **that same promise**. No second request goes out.\n- Otherwise start `fetchJson`, store its promise in `inflight`, and return it.\n\n`getUser` is `async`, so even a cache hit comes back as a promise. Callers always `await` it.",
+      "snippets": [
+        { "file": "src/api.js", "lines": [4, 18], "anchor": "export async function getUser", "focus": [7, 9] }
+      ]
+    },
+    {
+      "id": "inflight",
+      "label": "In-flight sharing and cleanup",
+      "kind": "concept",
+      "importance": "core",
+      "summary": "One promise per id while a request is pending, removed when it settles.",
+      "explanation": "The `inflight` map holds one promise per id while the request runs. Every caller that arrives during that window gets the same promise, so they all see the same result, and they all see the same **rejection** if it fails.\n\n`.finally` deletes the entry whether the request succeeded or failed. `cache.set` runs only inside `.then`, so a failure leaves nothing behind. The next call after a failure starts fresh.\n\nThe map is module-level state. It is shared by every caller in the process, and by every test in the same file.",
+      "snippets": [
+        { "file": "src/api.js", "lines": [10, 16], "anchor": ".finally", "focus": [15, 16], "note": "The `.then` writes the cache. The `.finally` clears the in-flight entry on both outcomes." }
+      ]
+    },
+    {
+      "id": "retry",
+      "label": "fetchJson retries with backoff",
+      "kind": "function",
+      "importance": "key",
+      "summary": "429, 502 and 503 are retried up to maxAttempts with exponential delay.",
+      "explanation": "Only statuses in `RETRYABLE` are retried. Any other non-2xx status, such as 404 or 500, throws on the first attempt.\n\nThe wait is `baseDelayMs * 2 ** (attempt - 1)`. With the defaults that is 200ms, then 400ms. The third failure throws without waiting.\n\nNetwork errors, where `fetch` itself rejects, are **not** caught. They propagate on the first attempt with no retry.",
+      "snippets": [
+        { "file": "src/fetch.js", "anchor": "RETRYABLE", "focus": [7, 10] }
+      ]
+    },
+    {
+      "id": "cache",
+      "label": "The 60s TTL cache",
+      "kind": "module",
+      "importance": "key",
+      "summary": "Entries carry a write timestamp and expire lazily on read.",
+      "explanation": "`set` stores `{ value, at }`. `get` returns `undefined` and deletes the entry when it is older than `TTL_MS`.\n\nExpiry is lazy. Nothing sweeps the map, so a key that is never read again stays in memory.\n\nBoth functions take an optional `now`. Production callers leave it out. Tests pass it to control time without mocking `Date`.",
+      "snippets": [
+        { "file": "src/cache.js", "anchor": "TTL_MS", "focus": [7, 10] }
+      ]
+    },
+    {
+      "id": "test",
+      "label": "What the test covers",
+      "kind": "test",
+      "importance": "supporting",
+      "summary": "One test: two concurrent calls make one fetch.",
+      "explanation": "The test mocks global `fetch` and counts calls. It covers only the happy path of in-flight sharing. Retries, rejection fan-out, and TTL expiry have no tests.",
+      "snippets": [
+        { "file": "src/api.test.js", "anchor": "callCount" }
+      ]
+    }
+  ],
+  "edges": [
+    { "from": "entry", "to": "cache", "label": "reads first" },
+    { "from": "entry", "to": "inflight", "label": "then joins" },
+    { "from": "inflight", "to": "retry", "label": "starts" },
+    { "from": "inflight", "to": "cache", "label": "writes on success" },
+    { "from": "entry", "to": "test", "label": "covered by" }
+  ],
+  "questions": [
+    {
+      "id": "e1",
+      "sectionId": "entry",
+      "prompt": "User 7 is cached. Another request for user 7 is also in flight. What does getUser(7) return?",
+      "choices": [
+        "The cached value, because the cache is checked before the in-flight map",
+        "The in-flight promise",
+        "A new fetch",
+        "It waits for the in-flight request, then reads the cache"
+      ],
+      "answer": 0,
+      "explanation": "Line 8 returns on a cache hit before line 9 ever looks at `inflight`."
+    },
+    {
+      "id": "e2",
+      "sectionId": "entry",
+      "prompt": "The API returns 0 for some id. What does the second getUser call for that id do?",
+      "choices": [
+        "Fetches again, because 0 is falsy",
+        "Returns 0 from the cache",
+        "Throws",
+        "Returns undefined"
+      ],
+      "answer": 1,
+      "explanation": "The check is `hit !== undefined`, not `if (hit)`, so 0 is a real cache hit."
+    },
+    {
+      "id": "i1",
+      "sectionId": "inflight",
+      "prompt": "Three callers ask for user 7 at once and the server returns 503 every time. What do they see?",
+      "choices": [
+        "All three reject with the same error after the retries run out",
+        "The first rejects and the other two start fresh requests",
+        "All three resolve with undefined",
+        "Only the first caller retries; the others reject at once"
+      ],
+      "answer": 0,
+      "explanation": "Callers two and three get the promise stored in `inflight`, so the single rejection reaches all of them. Nobody starts a second request while the first is pending."
+    },
+    {
+      "id": "i2",
+      "sectionId": "inflight",
+      "prompt": "A request for user 7 fails. One second later someone calls getUser(7). What happens?",
+      "choices": [
+        "It gets the cached error",
+        "It gets the old rejected promise from inflight",
+        "A new fetch starts",
+        "It returns undefined"
+      ],
+      "answer": 2,
+      "explanation": "`.finally` removed the `inflight` entry on rejection, and `cache.set` only runs in `.then`. A failure leaves no trace, so the next call fetches again."
+    },
+    {
+      "id": "r1",
+      "sectionId": "retry",
+      "prompt": "With default options, the server returns 500 on every request. How many times is fetch called?",
+      "choices": ["1", "2", "3", "Until it succeeds"],
+      "answer": 0,
+      "explanation": "500 is not in `RETRYABLE` (429, 502, 503), so the first attempt throws."
+    },
+    {
+      "id": "r2",
+      "sectionId": "retry",
+      "prompt": "With defaults, the server returns 429 three times. How long does fetchJson sleep in total before it throws?",
+      "choices": ["0ms", "600ms", "1400ms", "200ms"],
+      "answer": 1,
+      "explanation": "It sleeps 200ms after attempt 1 and 400ms after attempt 2. Attempt 3 hits `attempt >= maxAttempts` and throws without sleeping."
+    },
+    {
+      "id": "r3",
+      "sectionId": "retry",
+      "prompt": "The DNS lookup fails and fetch() itself rejects. What does fetchJson do?",
+      "choices": ["Retries up to maxAttempts", "Rejects at once with the network error", "Returns null", "Retries forever"],
+      "answer": 1,
+      "explanation": "There is no try/catch around `await fetch(url)`. Only HTTP status codes are checked, so network errors escape on the first attempt."
+    },
+    {
+      "id": "c1",
+      "sectionId": "cache",
+      "prompt": "A user is cached at t=0 and nobody reads it again. Where is the entry at t=5 minutes?",
+      "choices": [
+        "Still in the map. Only get() deletes expired entries",
+        "A timer deleted it at t=60s",
+        "It was evicted when the map grew",
+        "set() overwrote it"
+      ],
+      "answer": 0,
+      "explanation": "Expiry is lazy. Only `get` checks the age and deletes, so unread keys stay in memory."
+    },
+    {
+      "id": "c2",
+      "sectionId": "cache",
+      "prompt": "Code outside cache.js reads the store Map directly. What does it find for a cached user?",
+      "choices": ["The raw user object", "{ value, at } with the write timestamp", "{ value, expiresAt }", "A promise"],
+      "answer": 1,
+      "explanation": "`set` stores `{ value, at: now }` and `get` unwraps `.value`. Anything that bypasses `get` sees the wrapper."
+    }
+  ]
+}

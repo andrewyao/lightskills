@@ -1,0 +1,522 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Light Explain</title>
+<style>
+:root {
+  --bg: #f7f7f5; --panel: #ffffff; --ink: #1d1d1b; --muted: #6b6b66; --line: #e2e1dc; --soft: #efeee9;
+  --core: #6741d9; --key: #1c7ed6; --supporting: #0c8599; --background: #868e96;
+  --accent: #3b5bdb; --ok: #2f9e44;
+  --add-bg: #e6f6ea; --add-ink: #1e6b33; --del-bg: #fdecec; --del-ink: #a42a2a;
+  --focus-bg: #fff4d6; --focus-bar: #f08c00;
+  --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #161615; --panel: #1f1f1d; --ink: #ecebe6; --muted: #9a9a93; --line: #34342f; --soft: #2a2a27;
+    --core: #9775fa; --key: #4dabf7; --supporting: #3bc9db; --background: #adb5bd;
+    --accent: #748ffc; --ok: #51cf66;
+    --add-bg: #17301d; --add-ink: #8ce99a; --del-bg: #3a1a1a; --del-ink: #ffa8a8;
+    --focus-bg: #3a2f14; --focus-bar: #ffa94d;
+  }
+}
+* { box-sizing: border-box; }
+html, body { margin: 0; height: 100%; }
+body { background: var(--bg); color: var(--ink); font: 14px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif; display: flex; flex-direction: column; }
+button { font: inherit; color: inherit; cursor: pointer; border: 1px solid var(--line); background: var(--panel); border-radius: 8px; padding: 6px 12px; }
+button.primary { background: var(--accent); border-color: var(--accent); color: #fff; font-weight: 600; }
+button:disabled { opacity: .45; cursor: not-allowed; }
+code { font-family: var(--mono); font-size: 12.5px; background: var(--soft); padding: 1px 5px; border-radius: 4px; }
+
+header { display: flex; flex-wrap: wrap; align-items: center; gap: 10px 20px; padding: 12px 16px; border-bottom: 1px solid var(--line); background: var(--panel); }
+header h1 { font-size: 16px; margin: 0; }
+header .stats { color: var(--muted); font-size: 13px; }
+header .spacer { flex: 1; }
+.progress { display: flex; align-items: center; gap: 8px; font-size: 13px; }
+.bar { width: 140px; height: 8px; background: var(--soft); border-radius: 4px; overflow: hidden; }
+.bar > i { display: block; height: 100%; background: var(--ok); transition: width .3s; }
+
+.banner { padding: 10px 16px; font-size: 13.5px; border-bottom: 1px solid var(--line); }
+.banner.done { background: color-mix(in srgb, var(--ok) 14%, var(--panel)); }
+.banner:empty { display: none; }
+
+main { flex: 1; display: grid; grid-template-columns: minmax(0, 1fr) minmax(380px, 50%); min-height: 0; }
+#canvas { position: relative; min-height: 0; overflow: hidden; }
+#canvas svg { width: 100%; height: 100%; display: block; cursor: grab; touch-action: none; }
+#canvas svg.dragging { cursor: grabbing; }
+.legend { position: absolute; left: 12px; bottom: 12px; display: flex; gap: 6px; flex-wrap: wrap; }
+.legend button { font-size: 12px; padding: 3px 8px; display: flex; align-items: center; gap: 6px; }
+.legend button.off { opacity: .4; }
+.legend .dot { width: 9px; height: 9px; border-radius: 50%; }
+.zoom { position: absolute; right: 12px; bottom: 12px; display: flex; gap: 4px; }
+
+.node { cursor: pointer; }
+.node rect.body { fill: var(--panel); stroke: var(--line); stroke-width: 1.5; }
+.node.selected rect.body { stroke: var(--accent); stroke-width: 3; }
+.node.done rect.body { fill: var(--soft); }
+.node.done text { opacity: .6; }
+.node.dim { opacity: .18; }
+.node text { fill: var(--ink); font-size: 13px; }
+.node text.kind { fill: var(--muted); font-size: 11px; text-transform: uppercase; letter-spacing: .05em; }
+.node text.step { fill: #fff; font-size: 11px; font-weight: 700; }
+.edge path { fill: none; stroke: var(--muted); stroke-width: 1.4; opacity: .7; }
+.edge text { fill: var(--muted); font-size: 11px; paint-order: stroke; stroke: var(--bg); stroke-width: 4px; }
+.edge.dim { opacity: .15; }
+
+aside { border-left: 1px solid var(--line); background: var(--panel); overflow-y: auto; min-height: 0; }
+.detail { padding: 18px 20px 40px; }
+.detail .empty { color: var(--muted); padding-top: 30px; }
+.chip { display: inline-block; font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: .06em; padding: 2px 8px; border-radius: 10px; color: #fff; }
+.stepno { color: var(--muted); font-size: 13px; margin-left: 8px; }
+.detail h2 { margin: 8px 0 4px; font-size: 19px; }
+.detail .summary { color: var(--muted); margin: 0 0 14px; }
+.explain p { margin: 0 0 10px; }
+.explain ul { margin: 0 0 10px; padding-left: 20px; }
+.actions { display: flex; gap: 8px; align-items: center; margin: 16px 0; position: sticky; top: 0; background: var(--panel); padding: 8px 0; border-bottom: 1px solid var(--line); z-index: 1; }
+.actions .spacer { flex: 1; }
+.toc { list-style: none; padding: 0; margin: 14px 0; color: var(--ink); }
+.toc li { display: flex; align-items: center; gap: 10px; padding: 6px 8px; border-radius: 8px; cursor: pointer; }
+.toc li:hover { background: var(--soft); }
+.toc .n { width: 22px; height: 22px; border-radius: 50%; color: #fff; font-size: 12px; font-weight: 700; display: grid; place-items: center; flex: none; }
+.toc .read { color: var(--ok); margin-left: auto; }
+
+.snippet { border: 1px solid var(--line); border-radius: 8px; margin: 12px 0; overflow: hidden; }
+.snippet .file { font: 12px var(--mono); padding: 6px 10px; background: var(--soft); border-bottom: 1px solid var(--line); display: flex; justify-content: space-between; gap: 10px; }
+.snippet .file span { color: var(--muted); }
+.snippet .note { padding: 8px 10px; font-size: 13px; border-bottom: 1px solid var(--line); }
+.snippet table { border-collapse: collapse; width: 100%; font: 12px/1.5 var(--mono); }
+.snippet .scroll { overflow-x: auto; }
+.snippet td { padding: 0 8px; white-space: pre; vertical-align: top; }
+.snippet td.ln { color: var(--muted); text-align: right; user-select: none; width: 1%; border-right: 1px solid var(--line); }
+.snippet tr.focus { background: var(--focus-bg); }
+.snippet tr.focus td.ln { box-shadow: inset 3px 0 0 var(--focus-bar); color: var(--ink); }
+
+dialog { border: 1px solid var(--line); border-radius: 14px; background: var(--panel); color: var(--ink); width: min(680px, calc(100vw - 32px)); max-height: calc(100vh - 48px); padding: 0; }
+dialog::backdrop { background: rgb(0 0 0 / .45); }
+dialog.open-book { width: min(1280px, calc(100vw - 32px)); height: calc(100vh - 48px); }
+.open-book .quiz { display: grid; grid-template-columns: minmax(300px, 2fr) 3fr; gap: 24px; height: 100%; padding: 0; }
+.open-book .ask { padding: 22px 0 22px 24px; overflow-y: auto; }
+.open-book .section { border-left: 1px solid var(--line); padding: 22px 24px; overflow-y: auto; }
+.section .hint { color: var(--muted); font-size: 13px; margin: 0 0 10px; }
+.quiz { padding: 22px 24px; }
+.quiz .meta { color: var(--muted); font-size: 13px; display: flex; justify-content: space-between; }
+.quiz h3 { font-size: 17px; margin: 10px 0 14px; }
+.choice { display: block; width: 100%; text-align: left; border-radius: 10px; padding: 10px 12px; margin: 8px 0; }
+.choice:hover:not(:disabled) { border-color: var(--accent); }
+.choice.wrong { text-decoration: line-through; color: var(--del-ink); background: var(--del-bg); opacity: 1; }
+.choice.right { border: 2px solid var(--ok); color: var(--add-ink); background: var(--add-bg); opacity: 1; }
+.choice:disabled { cursor: default; }
+.hints { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; font-size: 13px; color: var(--muted); margin: 4px 0 6px; }
+.hints button { font-size: 12.5px; padding: 3px 10px; border-radius: 14px; }
+.hints button.on { background: var(--soft); color: var(--ink); opacity: 1; }
+.answer { border-left: 4px solid var(--ok); background: color-mix(in srgb, var(--ok) 8%, var(--panel)); border-radius: 6px; padding: 10px 12px; margin-top: 14px; }
+.answer strong:first-child { color: var(--ok); }
+.quiz .nav { display: flex; justify-content: space-between; margin-top: 18px; }
+.result-row { border-top: 1px solid var(--line); padding: 8px 0; display: flex; gap: 12px; justify-content: space-between; }
+.result-row .used { color: var(--muted); font-size: 13px; white-space: nowrap; }
+
+@media (max-width: 820px) {
+  main { grid-template-columns: 1fr; grid-template-rows: 46vh auto; }
+  aside { border-left: 0; border-top: 1px solid var(--line); }
+  .open-book .quiz { grid-template-columns: 1fr; grid-template-rows: auto 1fr; gap: 0; }
+  .open-book .ask { padding: 18px 16px 12px; }
+  .open-book .section { border-left: 0; border-top: 1px solid var(--line); padding: 16px; }
+  header { padding: 10px 16px; }
+}
+</style>
+</head>
+<body>
+<header>
+  <h1 id="title"></h1>
+  <span class="stats" id="stats"></span>
+  <span class="spacer"></span>
+  <div class="progress"><div class="bar"><i id="bar"></i></div><span id="progressText"></span></div>
+  <button id="quizBtn" class="primary"></button>
+  <button id="resetBtn" title="Clear all progress for this explainer">Reset</button>
+</header>
+<div class="banner" id="banner"></div>
+<main>
+  <div id="canvas">
+    <svg id="svg" xmlns="http://www.w3.org/2000/svg"></svg>
+    <div class="legend" id="legend"></div>
+    <div class="zoom"><button id="zoomIn">+</button><button id="zoomOut">−</button><button id="fit">Fit</button></div>
+  </div>
+  <aside><div class="detail" id="detail"></div></aside>
+</main>
+<dialog id="quiz"><div class="quiz" id="quizBody"></div></dialog>
+
+<script id="spec" type="application/json">{"concept":"How getUser loads a user","summary":"`getUser(id)` is the only way the app loads a user. It checks a 60-second cache, joins a request that is already in flight, and otherwise fetches with retries. The parts that matter most are the failure paths: one failed request rejects every caller waiting on it, and nothing about a failure is remembered.","sections":[{"id":"entry","label":"getUser: the three-step lookup","kind":"function","importance":"core","summary":"Cache first, then the in-flight map, then the network.","explanation":"Every call goes through the same three checks, in this order:\n\n- `cache.get(userId)`. A hit returns at once. The check is `!== undefined`, so falsy values like `0` or `\"\"` still count as hits.\n- `inflight.has(userId)`. If another call already started a fetch for this id, return **that same promise**. No second request goes out.\n- Otherwise start `fetchJson`, store its promise in `inflight`, and return it.\n\n`getUser` is `async`, so even a cache hit comes back as a promise. Callers always `await` it.","snippets":[{"file":"src/api.js","lines":[4,18],"anchor":"export async function getUser","focus":[7,9]}],"code":[{"file":"src/api.js","start":4,"end":18,"note":"","lines":[{"n":4,"s":"const inflight = new Map();","f":false},{"n":5,"s":"","f":false},{"n":6,"s":"export async function getUser(userId) {","f":false},{"n":7,"s":"  const hit = cache.get(userId);","f":true},{"n":8,"s":"  if (hit !== undefined) return hit;","f":true},{"n":9,"s":"  if (inflight.has(userId)) return inflight.get(userId);","f":true},{"n":10,"s":"  const p = fetchJson(`/users/${userId}`)","f":false},{"n":11,"s":"    .then((user) => {","f":false},{"n":12,"s":"      cache.set(userId, user);","f":false},{"n":13,"s":"      return user;","f":false},{"n":14,"s":"    })","f":false},{"n":15,"s":"    .finally(() => inflight.delete(userId));","f":false},{"n":16,"s":"  inflight.set(userId, p);","f":false},{"n":17,"s":"  return p;","f":false},{"n":18,"s":"}","f":false}]}]},{"id":"inflight","label":"In-flight sharing and cleanup","kind":"concept","importance":"core","summary":"One promise per id while a request is pending, removed when it settles.","explanation":"The `inflight` map holds one promise per id while the request runs. Every caller that arrives during that window gets the same promise, so they all see the same result, and they all see the same **rejection** if it fails.\n\n`.finally` deletes the entry whether the request succeeded or failed. `cache.set` runs only inside `.then`, so a failure leaves nothing behind. The next call after a failure starts fresh.\n\nThe map is module-level state. It is shared by every caller in the process, and by every test in the same file.","snippets":[{"file":"src/api.js","lines":[10,16],"anchor":".finally","focus":[15,16],"note":"The `.then` writes the cache. The `.finally` clears the in-flight entry on both outcomes."}],"code":[{"file":"src/api.js","start":10,"end":16,"note":"The `.then` writes the cache. The `.finally` clears the in-flight entry on both outcomes.","lines":[{"n":10,"s":"  const p = fetchJson(`/users/${userId}`)","f":false},{"n":11,"s":"    .then((user) => {","f":false},{"n":12,"s":"      cache.set(userId, user);","f":false},{"n":13,"s":"      return user;","f":false},{"n":14,"s":"    })","f":false},{"n":15,"s":"    .finally(() => inflight.delete(userId));","f":true},{"n":16,"s":"  inflight.set(userId, p);","f":true}]}]},{"id":"retry","label":"fetchJson retries with backoff","kind":"function","importance":"key","summary":"429, 502 and 503 are retried up to maxAttempts with exponential delay.","explanation":"Only statuses in `RETRYABLE` are retried. Any other non-2xx status, such as 404 or 500, throws on the first attempt.\n\nThe wait is `baseDelayMs * 2 ** (attempt - 1)`. With the defaults that is 200ms, then 400ms. The third failure throws without waiting.\n\nNetwork errors, where `fetch` itself rejects, are **not** caught. They propagate on the first attempt with no retry.","snippets":[{"file":"src/fetch.js","anchor":"RETRYABLE","focus":[7,10]}],"code":[{"file":"src/fetch.js","start":1,"end":12,"note":"","lines":[{"n":1,"s":"const RETRYABLE = new Set([429, 502, 503]);","f":false},{"n":2,"s":"","f":false},{"n":3,"s":"export async function fetchJson(url, { maxAttempts = 3, baseDelayMs = 200 } = {}) {","f":false},{"n":4,"s":"  for (let attempt = 1; ; attempt++) {","f":false},{"n":5,"s":"    const res = await fetch(url);","f":false},{"n":6,"s":"    if (res.ok) return res.json();","f":false},{"n":7,"s":"    if (!RETRYABLE.has(res.status) || attempt >= maxAttempts) {","f":true},{"n":8,"s":"      throw new Error(`HTTP ${res.status} after ${attempt} attempt(s)`);","f":true},{"n":9,"s":"    }","f":true},{"n":10,"s":"    await new Promise((r) => setTimeout(r, baseDelayMs * 2 ** (attempt - 1)));","f":true},{"n":11,"s":"  }","f":false},{"n":12,"s":"}","f":false}]}]},{"id":"cache","label":"The 60s TTL cache","kind":"module","importance":"key","summary":"Entries carry a write timestamp and expire lazily on read.","explanation":"`set` stores `{ value, at }`. `get` returns `undefined` and deletes the entry when it is older than `TTL_MS`.\n\nExpiry is lazy. Nothing sweeps the map, so a key that is never read again stays in memory.\n\nBoth functions take an optional `now`. Production callers leave it out. Tests pass it to control time without mocking `Date`.","snippets":[{"file":"src/cache.js","anchor":"TTL_MS","focus":[7,10]}],"code":[{"file":"src/cache.js","start":1,"end":16,"note":"","lines":[{"n":1,"s":"const store = new Map();","f":false},{"n":2,"s":"const TTL_MS = 60_000;","f":false},{"n":3,"s":"","f":false},{"n":4,"s":"export function get(key, now = Date.now()) {","f":false},{"n":5,"s":"  const entry = store.get(key);","f":false},{"n":6,"s":"  if (!entry) return undefined;","f":false},{"n":7,"s":"  if (now - entry.at > TTL_MS) {","f":true},{"n":8,"s":"    store.delete(key);","f":true},{"n":9,"s":"    return undefined;","f":true},{"n":10,"s":"  }","f":true},{"n":11,"s":"  return entry.value;","f":false},{"n":12,"s":"}","f":false},{"n":13,"s":"","f":false},{"n":14,"s":"export function set(key, value, now = Date.now()) {","f":false},{"n":15,"s":"  store.set(key, { value, at: now });","f":false},{"n":16,"s":"}","f":false}]}]},{"id":"test","label":"What the test covers","kind":"test","importance":"supporting","summary":"One test: two concurrent calls make one fetch.","explanation":"The test mocks global `fetch` and counts calls. It covers only the happy path of in-flight sharing. Retries, rejection fan-out, and TTL expiry have no tests.","snippets":[{"file":"src/api.test.js","anchor":"callCount"}],"code":[{"file":"src/api.test.js","start":1,"end":9,"note":"","lines":[{"n":1,"s":"import { test, mock } from 'node:test';","f":false},{"n":2,"s":"import assert from 'node:assert';","f":false},{"n":3,"s":"import { getUser } from './api.js';","f":false},{"n":4,"s":"","f":false},{"n":5,"s":"test('concurrent getUser calls share one request', async () => {","f":false},{"n":6,"s":"  const f = mock.method(globalThis, 'fetch', async () => ({ ok: true, json: async () => ({ id: 1 }) }));","f":false},{"n":7,"s":"  await Promise.all([getUser(1), getUser(1)]);","f":false},{"n":8,"s":"  assert.strictEqual(f.mock.callCount(), 1);","f":false},{"n":9,"s":"});","f":false}]}]}],"edges":[{"from":"entry","to":"cache","label":"reads first"},{"from":"entry","to":"inflight","label":"then joins"},{"from":"inflight","to":"retry","label":"starts"},{"from":"inflight","to":"cache","label":"writes on success"},{"from":"entry","to":"test","label":"covered by"}],"questions":[{"id":"e1","sectionId":"entry","prompt":"User 7 is cached. Another request for user 7 is also in flight. What does getUser(7) return?","choices":["The cached value, because the cache is checked before the in-flight map","The in-flight promise","A new fetch","It waits for the in-flight request, then reads the cache"],"answer":0,"explanation":"Line 8 returns on a cache hit before line 9 ever looks at `inflight`."},{"id":"e2","sectionId":"entry","prompt":"The API returns 0 for some id. What does the second getUser call for that id do?","choices":["Fetches again, because 0 is falsy","Returns 0 from the cache","Throws","Returns undefined"],"answer":1,"explanation":"The check is `hit !== undefined`, not `if (hit)`, so 0 is a real cache hit."},{"id":"i1","sectionId":"inflight","prompt":"Three callers ask for user 7 at once and the server returns 503 every time. What do they see?","choices":["All three reject with the same error after the retries run out","The first rejects and the other two start fresh requests","All three resolve with undefined","Only the first caller retries; the others reject at once"],"answer":0,"explanation":"Callers two and three get the promise stored in `inflight`, so the single rejection reaches all of them. Nobody starts a second request while the first is pending."},{"id":"i2","sectionId":"inflight","prompt":"A request for user 7 fails. One second later someone calls getUser(7). What happens?","choices":["It gets the cached error","It gets the old rejected promise from inflight","A new fetch starts","It returns undefined"],"answer":2,"explanation":"`.finally` removed the `inflight` entry on rejection, and `cache.set` only runs in `.then`. A failure leaves no trace, so the next call fetches again."},{"id":"r1","sectionId":"retry","prompt":"With default options, the server returns 500 on every request. How many times is fetch called?","choices":["1","2","3","Until it succeeds"],"answer":0,"explanation":"500 is not in `RETRYABLE` (429, 502, 503), so the first attempt throws."},{"id":"r2","sectionId":"retry","prompt":"With defaults, the server returns 429 three times. How long does fetchJson sleep in total before it throws?","choices":["0ms","600ms","1400ms","200ms"],"answer":1,"explanation":"It sleeps 200ms after attempt 1 and 400ms after attempt 2. Attempt 3 hits `attempt >= maxAttempts` and throws without sleeping."},{"id":"r3","sectionId":"retry","prompt":"The DNS lookup fails and fetch() itself rejects. What does fetchJson do?","choices":["Retries up to maxAttempts","Rejects at once with the network error","Returns null","Retries forever"],"answer":1,"explanation":"There is no try/catch around `await fetch(url)`. Only HTTP status codes are checked, so network errors escape on the first attempt."},{"id":"c1","sectionId":"cache","prompt":"A user is cached at t=0 and nobody reads it again. Where is the entry at t=5 minutes?","choices":["Still in the map. Only get() deletes expired entries","A timer deleted it at t=60s","It was evicted when the map grew","set() overwrote it"],"answer":0,"explanation":"Expiry is lazy. Only `get` checks the age and deletes, so unread keys stay in memory."},{"id":"c2","sectionId":"cache","prompt":"Code outside cache.js reads the store Map directly. What does it find for a cached user?","choices":["The raw user object","{ value, at } with the write timestamp","{ value, expiresAt }","A promise"],"answer":1,"explanation":"`set` stores `{ value, at: now }` and `get` unwraps `.value`. Anything that bypasses `get` sees the wrapper."}],"source":{"repo":"example","commit":null,"dirty":false,"files":4,"lines":59}}</script>
+<script>
+const SPEC = JSON.parse(document.getElementById('spec').textContent);
+const IMPORTANCE = ['core', 'key', 'supporting', 'background'];
+const NODE_W = 220, NODE_H = 66, GAP_X = 50, GAP_Y = 90;
+const sectionById = new Map(SPEC.sections.map((s) => [s.id, s]));
+const stepOf = new Map(SPEC.sections.map((s, i) => [s.id, i + 1]));
+const questionById = new Map(SPEC.questions.map((q) => [q.id, q]));
+const STORE_KEY = 'lightexplain1:' + hash(JSON.stringify([SPEC.concept, SPEC.sections.map((s) => s.id), SPEC.questions.map((q) => q.id)]));
+
+// phase: 'read' -> 'quiz' -> 'done'
+let state = load() ?? { phase: 'read', read: [], quiz: null };
+let selected = null;
+let hiddenImportance = new Set();
+
+function hash(s) { let h = 0; for (const c of s) h = (h * 31 + c.charCodeAt(0)) | 0; return (h >>> 0).toString(36); }
+function load() { try { return JSON.parse(localStorage.getItem(STORE_KEY)); } catch { return null; } }
+function save() { try { localStorage.setItem(STORE_KEY, JSON.stringify(state)); } catch {} }
+function esc(s) { return String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c])); }
+function inline(s) { return esc(s).replace(/`([^`]+)`/g, '<code>$1</code>').replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>'); }
+function md(text) {
+  return String(text ?? '').split(/\n{2,}/).map((block) => {
+    const lines = block.split('\n');
+    if (lines.every((l) => /^\s*[-*] /.test(l))) return '<ul>' + lines.map((l) => '<li>' + inline(l.replace(/^\s*[-*] /, '')) + '</li>').join('') + '</ul>';
+    return '<p>' + inline(block).replace(/\n/g, '<br>') + '</p>';
+  }).join('');
+}
+function shuffle(a) { a = [...a]; for (let i = a.length - 1; i > 0; i--) { const j = Math.floor(Math.random() * (i + 1)); [a[i], a[j]] = [a[j], a[i]]; } return a; }
+const color = (s) => `var(--${s.importance})`;
+
+// Only core and key sections are quizzed. The quiz unlocks once all of them are read.
+const quizzed = (s) => s.importance === 'core' || s.importance === 'key';
+function requiredSections() { return SPEC.sections.filter(quizzed); }
+function pending() { return requiredSections().filter((s) => !state.read.includes(s.id)); }
+
+// ---------- layout: layered DAG, top to bottom ----------
+function layout() {
+  const preds = new Map(SPEC.sections.map((s) => [s.id, []]));
+  for (const e of SPEC.edges ?? []) preds.get(e.to).push(e.from);
+  const rank = new Map();
+  const visiting = new Set();
+  const rankOf = (id) => {
+    if (rank.has(id)) return rank.get(id);
+    if (visiting.has(id)) return 0;
+    visiting.add(id);
+    const r = Math.max(-1, ...preds.get(id).map(rankOf)) + 1;
+    visiting.delete(id);
+    rank.set(id, r);
+    return r;
+  };
+  SPEC.sections.forEach((s) => rankOf(s.id));
+  const layers = [];
+  for (const s of SPEC.sections) (layers[rank.get(s.id)] ??= []).push(s.id);
+  const order = new Map();
+  layers.forEach((l) => l.forEach((id, i) => order.set(id, i)));
+  for (let pass = 0; pass < 4; pass++) {
+    for (const l of layers.slice(1)) {
+      const bary = (id) => { const p = preds.get(id); return p.length ? p.reduce((s, x) => s + order.get(x), 0) / p.length : order.get(id); };
+      l.sort((a, b) => bary(a) - bary(b)).forEach((id, i) => order.set(id, i));
+    }
+  }
+  const widest = Math.max(...layers.map((l) => l.length));
+  const pos = new Map();
+  layers.forEach((l, r) => {
+    const offset = ((widest - l.length) * (NODE_W + GAP_X)) / 2;
+    l.forEach((id, i) => pos.set(id, { x: offset + i * (NODE_W + GAP_X), y: r * (NODE_H + GAP_Y) }));
+  });
+  return { pos, width: widest * (NODE_W + GAP_X) - GAP_X, height: layers.length * (NODE_H + GAP_Y) - GAP_Y };
+}
+
+const LAYOUT = layout();
+const svg = document.getElementById('svg');
+let view = null;
+
+function wrap(text, max) {
+  const words = String(text).split(/\s+/);
+  const lines = [''];
+  for (const w of words) {
+    if ((lines.at(-1) + ' ' + w).trim().length > max && lines.at(-1)) lines.push(w);
+    else lines[lines.length - 1] = (lines.at(-1) + ' ' + w).trim();
+  }
+  if (lines.length > 2) { lines.length = 2; lines[1] = lines[1].slice(0, max - 1) + '…'; }
+  return lines;
+}
+
+function drawDiagram() {
+  const { pos } = LAYOUT;
+  const visible = (s) => !hiddenImportance.has(s.importance);
+  let out = '<defs><marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="var(--muted)"/></marker></defs>';
+  for (const e of SPEC.edges ?? []) {
+    const a = pos.get(e.from), b = pos.get(e.to);
+    const x1 = a.x + NODE_W / 2, y1 = a.y + NODE_H, x2 = b.x + NODE_W / 2, y2 = b.y;
+    const back = y2 <= y1;
+    const d = back
+      ? `M${x1},${y1} C${x1 + 120},${y1 + 80} ${x2 + 120},${y2 - 80} ${x2},${y2}`
+      : `M${x1},${y1} C${x1},${(y1 + y2) / 2} ${x2},${(y1 + y2) / 2} ${x2},${y2}`;
+    const dim = !visible(sectionById.get(e.from)) || !visible(sectionById.get(e.to));
+    out += `<g class="edge${dim ? ' dim' : ''}"><path d="${d}" marker-end="url(#arrow)"/>`;
+    if (e.label) out += `<text x="${(x1 + x2) / 2 + 6}" y="${(y1 + y2) / 2 + 4}">${esc(e.label)}</text>`;
+    out += '</g>';
+  }
+  for (const s of SPEC.sections) {
+    const { x, y } = pos.get(s.id);
+    const read = state.read.includes(s.id);
+    const cls = ['node', read && 'done', selected === s.id && 'selected', !visible(s) && 'dim'].filter(Boolean).join(' ');
+    const lines = wrap(s.label, 24);
+    out += `<g class="${cls}" data-id="${esc(s.id)}" transform="translate(${x},${y})" tabindex="0" role="button" aria-label="Step ${stepOf.get(s.id)}: ${esc(s.label)}, ${s.importance}">
+      <rect class="body" width="${NODE_W}" height="${NODE_H}" rx="10"/>
+      <rect x="0" y="0" width="7" height="${NODE_H}" rx="3" fill="${color(s)}"/>
+      <circle cx="${NODE_W - 16}" cy="16" r="10" fill="${read ? 'var(--ok)' : color(s)}"/>
+      ${read
+        ? `<path d="M${NODE_W - 20},16 l3,3 l6,-6" stroke="#fff" stroke-width="2" fill="none"/>`
+        : `<text class="step" x="${NODE_W - 16}" y="20" text-anchor="middle">${stepOf.get(s.id)}</text>`}
+      <text class="kind" x="18" y="18">${esc(s.kind ?? '')} · <tspan fill="${color(s)}" font-weight="700">${s.importance}</tspan></text>
+      ${lines.map((l, i) => `<text x="18" y="${38 + i * 16}" font-weight="600">${esc(l)}</text>`).join('')}
+    </g>`;
+  }
+  svg.innerHTML = out;
+  if (!view) fit(); else applyView();
+}
+
+function fit() {
+  const pad = 40;
+  view = { x: -pad, y: -pad, w: LAYOUT.width + pad * 2, h: LAYOUT.height + pad * 2 };
+  applyView();
+}
+function applyView() { svg.setAttribute('viewBox', `${view.x} ${view.y} ${view.w} ${view.h}`); }
+function zoom(f, cx = view.x + view.w / 2, cy = view.y + view.h / 2) {
+  view = { x: cx - (cx - view.x) * f, y: cy - (cy - view.y) * f, w: view.w * f, h: view.h * f };
+  applyView();
+}
+svg.addEventListener('wheel', (ev) => {
+  ev.preventDefault();
+  const r = svg.getBoundingClientRect();
+  const s = Math.max(view.w / r.width, view.h / r.height);
+  zoom(ev.deltaY > 0 ? 1.1 : 0.9, view.x + (ev.clientX - r.left) * s, view.y + (ev.clientY - r.top) * s);
+}, { passive: false });
+let drag = null;
+svg.addEventListener('pointerdown', (ev) => { drag = { x: ev.clientX, y: ev.clientY, moved: false }; });
+window.addEventListener('pointermove', (ev) => {
+  if (!drag) return;
+  const dx = ev.clientX - drag.x, dy = ev.clientY - drag.y;
+  if (!drag.moved && Math.hypot(dx, dy) < 4) return;
+  drag.moved = true;
+  svg.classList.add('dragging');
+  const r = svg.getBoundingClientRect();
+  const s = Math.max(view.w / r.width, view.h / r.height);
+  view.x -= dx * s; view.y -= dy * s;
+  drag.x = ev.clientX; drag.y = ev.clientY;
+  applyView();
+});
+window.addEventListener('pointerup', (ev) => {
+  const wasDrag = drag?.moved;
+  drag = null;
+  svg.classList.remove('dragging');
+  if (wasDrag) return;
+  const g = ev.target.closest?.('.node');
+  if (g) select(g.dataset.id);
+});
+svg.addEventListener('keydown', (ev) => { if (ev.key === 'Enter' && ev.target.dataset?.id) select(ev.target.dataset.id); });
+document.getElementById('zoomIn').onclick = () => zoom(0.8);
+document.getElementById('zoomOut').onclick = () => zoom(1.25);
+document.getElementById('fit').onclick = fit;
+
+// ---------- detail panel ----------
+function select(id) { selected = id; render(); document.querySelector('aside').scrollTop = 0; }
+
+// The reading path is the spec order. Next is the first unread section after the current one.
+function nextUnread() {
+  const from = selected ? stepOf.get(selected) : 0;
+  const rest = [...SPEC.sections.slice(from), ...SPEC.sections.slice(0, from)];
+  return rest.find((s) => s.id !== selected && !state.read.includes(s.id)) ?? null;
+}
+
+// A section's explanation and code, shown in the detail pane and as quiz hints.
+const renderExplain = (s) => `<div class="explain">${md(s.explanation)}</div>`;
+const renderCode = (s) => (s.code ?? []).map(renderSnippet).join('') || '<p class="summary">This section is a concept and has no code of its own.</p>';
+
+function renderSnippet(c) {
+  const rows = c.lines.map((l) => `<tr class="${l.f ? 'focus' : ''}"><td class="ln">${l.n}</td><td>${esc(l.s)}</td></tr>`).join('');
+  return `<div class="snippet"><div class="file">${esc(c.file)}<span>lines ${c.start}–${c.end}</span></div>${c.note ? `<div class="note">${inline(c.note)}</div>` : ''}<div class="scroll"><table>${rows}</table></div></div>`;
+}
+
+function renderToc() {
+  return `<ol class="toc">${SPEC.sections.map((s) => `<li data-id="${esc(s.id)}">
+    <span class="n" style="background:${color(s)}">${stepOf.get(s.id)}</span>
+    <span>${esc(s.label)} <span style="color:var(--muted);font-size:12px">· ${s.importance}</span></span>
+    ${state.read.includes(s.id) ? '<span class="read">✓</span>' : ''}</li>`).join('')}</ol>`;
+}
+
+function renderDetail() {
+  const el = document.getElementById('detail');
+  const s = sectionById.get(selected);
+  if (!s) {
+    const start = nextUnread() ?? SPEC.sections[0];
+    el.innerHTML = `<div class="empty">
+      <h2 style="color:var(--ink)">${esc(SPEC.concept)}</h2>
+      <div class="explain" style="color:var(--ink)">${md(SPEC.summary)}</div>
+      <p>Read the sections in order, or click any box in the diagram. The quiz unlocks once every <strong>core</strong> and <strong>key</strong> section is marked read. Supporting and background sections are optional.</p>
+      ${renderToc()}
+      <button class="primary" id="startBtn">${state.read.length ? 'Continue with' : 'Start with'} ${esc(start.label)}</button></div>`;
+    document.getElementById('startBtn').onclick = () => select(start.id);
+    el.querySelectorAll('.toc li').forEach((li) => li.onclick = () => select(li.dataset.id));
+    return;
+  }
+  const done = state.read.includes(s.id);
+  const next = nextUnread();
+  el.innerHTML = `
+    <span class="chip" style="background:${color(s)}">${s.importance}</span><span class="stepno">Step ${stepOf.get(s.id)} of ${SPEC.sections.length}</span>
+    <h2>${esc(s.label)}</h2>
+    <p class="summary">${inline(s.summary)}</p>
+    <div class="actions">
+      <button id="tocBtn" title="All sections">☰</button>
+      <button class="${done || next ? '' : 'primary'}" id="doneBtn">${done ? '✓ Read (undo)' : 'Mark read'}</button>
+      <span class="spacer"></span>
+      ${next ? `<button class="${done ? '' : 'primary'}" id="nextBtn">${done ? 'Next' : 'Read &amp; next'}: ${esc(next.label)} →</button>` : ''}
+    </div>
+    ${renderExplain(s)}
+    ${renderCode(s)}`;
+  document.getElementById('tocBtn').onclick = () => select(null);
+  document.getElementById('doneBtn').onclick = () => toggleRead(s.id);
+  if (next) document.getElementById('nextBtn').onclick = () => {
+    if (!done) { state.read.push(s.id); save(); }
+    select(next.id);
+  };
+}
+
+function toggleRead(id) {
+  if (state.read.includes(id)) state.read = state.read.filter((x) => x !== id);
+  else state.read.push(id);
+  save();
+  render();
+}
+
+// ---------- quiz ----------
+// Each question climbs a hint ladder. A wrong answer raises the hint one level.
+const HINTS = ['None', 'Section', 'Code', 'Answer'];
+const MAX_HINT = HINTS.length - 1;
+
+function startQuiz() {
+  const items = SPEC.sections.filter(quizzed)
+    .flatMap((s) => SPEC.questions.filter((q) => q.sectionId === s.id))
+    .map((q) => ({ qid: q.id, order: shuffle(q.choices.map((_, i) => i)), hint: 0, wrong: [], solved: false }));
+  state.quiz = { items, index: 0, finished: false };
+  state.phase = 'quiz';
+  save();
+  render();
+  openQuiz();
+}
+
+function openQuiz() {
+  const dlg = document.getElementById('quiz');
+  if (!dlg.open) dlg.showModal();
+  renderQuiz();
+}
+
+function renderHint(s, level) {
+  if (level === 0) return '<p class="hint">No hint yet. Pick an answer, or take a hint.</p>';
+  return `<p class="hint">The answer is in this section.</p>
+    <span class="chip" style="background:${color(s)}">${s.importance}</span><span class="stepno">Step ${stepOf.get(s.id)}</span>
+    <h3>${esc(s.label)}</h3>
+    ${renderExplain(s)}
+    ${level >= 2 ? renderCode(s) : ''}`;
+}
+
+function renderQuiz() {
+  const body = document.getElementById('quizBody');
+  const quiz = state.quiz;
+  document.getElementById('quiz').classList.toggle('open-book', !quiz.finished);
+  if (quiz.finished) return renderResult(body);
+  const item = quiz.items[quiz.index];
+  const q = questionById.get(item.qid);
+  const s = sectionById.get(q.sectionId);
+  const last = quiz.index === quiz.items.length - 1;
+  const showAnswer = item.solved || item.hint === MAX_HINT;
+  body.innerHTML = `<div class="ask">
+    <div class="meta"><span>Question ${quiz.index + 1} of ${quiz.items.length}</span><span style="color:${color(s)}">${esc(s.label)}</span></div>
+    <div class="hints">Hint:
+      ${HINTS.map((h, i) => `<button data-hint="${i}" class="${i <= item.hint ? 'on' : ''}" ${i <= item.hint || item.solved ? 'disabled' : ''}>${h}</button>`).join('')}
+    </div>
+    <h3>${inline(q.prompt)}</h3>
+    ${item.order.map((ci) => {
+      const cls = item.wrong.includes(ci) ? 'wrong' : showAnswer && ci === q.answer ? 'right' : '';
+      return `<button class="choice ${cls}" data-choice="${ci}" ${item.solved || item.wrong.includes(ci) ? 'disabled' : ''}>${inline(q.choices[ci])}</button>`;
+    }).join('')}
+    ${showAnswer ? `<div class="answer"><strong>${item.solved ? 'Correct.' : 'Answer:'}</strong> ${item.solved ? '' : inline(q.choices[q.answer])}${md(q.explanation)}</div>` : ''}
+    <div class="nav">
+      <button id="qBack" ${quiz.index === 0 ? 'disabled' : ''}>← Back</button>
+      <button class="primary" id="qNext" ${item.solved ? '' : 'disabled'}>${last ? 'Finish' : 'Next →'}</button>
+    </div></div>
+    <div class="section">${renderHint(s, item.hint)}</div>`;
+  body.querySelectorAll('[data-hint]').forEach((b) => b.onclick = () => { item.hint = +b.dataset.hint; save(); renderQuiz(); });
+  body.querySelectorAll('[data-choice]').forEach((b) => b.onclick = () => {
+    const ci = +b.dataset.choice;
+    if (ci === q.answer) item.solved = true;
+    else { item.wrong.push(ci); item.hint = Math.min(MAX_HINT, item.hint + 1); }
+    save();
+    renderQuiz();
+  });
+  document.getElementById('qBack').onclick = () => { quiz.index--; renderQuiz(); };
+  document.getElementById('qNext').onclick = () => {
+    if (last) { quiz.finished = true; state.phase = 'done'; save(); render(); }
+    else quiz.index++;
+    renderQuiz();
+  };
+}
+
+function renderResult(body) {
+  const items = state.quiz.items;
+  const counts = HINTS.map((_, i) => items.filter((it) => it.hint === i).length);
+  body.innerHTML = `
+    <div class="meta"><span>Quiz done</span><span>${items.length} questions</span></div>
+    <h3>You worked through every question.</h3>
+    <p>${HINTS.map((h, i) => counts[i] ? `${counts[i]} with ${i ? `the ${h.toLowerCase()} hint` : 'no hint'}` : '').filter(Boolean).join(' · ')}.
+      Sections behind questions that needed the code or the answer are worth one more read.</p>
+    ${items.map((it) => {
+      const q = questionById.get(it.qid);
+      return `<div class="result-row"><span>${inline(q.prompt)}<br><span style="color:var(--muted);font-size:12.5px">Step ${stepOf.get(q.sectionId)}: ${esc(sectionById.get(q.sectionId).label)}</span></span><span class="used">${it.hint ? HINTS[it.hint] + ' hint' : 'No hint'}</span></div>`;
+    }).join('')}
+    <div class="nav"><span></span><button class="primary" id="qClose">Done</button></div>`;
+  document.getElementById('qClose').onclick = () => document.getElementById('quiz').close();
+}
+
+// ---------- header, banner, legend ----------
+function renderChrome() {
+  document.getElementById('title').textContent = SPEC.concept;
+  document.title = SPEC.concept + ' · Light Explain';
+  const src = SPEC.source ?? {};
+  document.getElementById('stats').textContent = [
+    src.repo && `${src.repo}${src.commit ? '@' + src.commit : ''}${src.dirty ? ' (uncommitted edits)' : ''}`,
+    `${src.files ?? 0} files`,
+    `${SPEC.sections.length} sections`,
+  ].filter(Boolean).join(' · ');
+  const req = requiredSections();
+  const left = pending().length;
+  document.getElementById('bar').style.width = `${req.length ? ((req.length - left) / req.length) * 100 : 100}%`;
+  document.getElementById('progressText').textContent = `${req.length - left}/${req.length} read`;
+  const btn = document.getElementById('quizBtn');
+  if (state.phase === 'quiz') { btn.textContent = 'Resume quiz'; btn.disabled = false; }
+  else if (!SPEC.questions.length) { btn.textContent = 'No quiz'; btn.disabled = true; }
+  else { btn.textContent = state.phase === 'done' ? 'Retake quiz' : 'Take quiz'; btn.disabled = left > 0; btn.title = left ? `Read ${left} more section(s) first` : ''; }
+  const banner = document.getElementById('banner');
+  banner.className = 'banner ' + state.phase;
+  banner.innerHTML = state.phase === 'done' ? 'Quiz done. You found the answer to every question.' : '';
+  document.getElementById('legend').innerHTML = IMPORTANCE.map((imp) => {
+    const count = SPEC.sections.filter((s) => s.importance === imp).length;
+    return count ? `<button data-imp="${imp}" class="${hiddenImportance.has(imp) ? 'off' : ''}" title="Dim or show ${imp} sections"><span class="dot" style="background:var(--${imp})"></span>${imp} ${count}</button>` : '';
+  }).join('');
+  document.querySelectorAll('#legend button').forEach((b) => b.onclick = () => {
+    const imp = b.dataset.imp;
+    hiddenImportance.has(imp) ? hiddenImportance.delete(imp) : hiddenImportance.add(imp);
+    render();
+  });
+}
+
+function render() { renderChrome(); drawDiagram(); renderDetail(); }
+
+document.getElementById('quizBtn').onclick = () => state.phase === 'quiz' ? openQuiz() : startQuiz();
+document.getElementById('resetBtn').onclick = () => {
+  try { localStorage.removeItem(STORE_KEY); } catch {}
+  location.reload();
+};
+document.addEventListener('keydown', (ev) => {
+  if (document.getElementById('quiz').open || ev.target.tagName === 'INPUT') return;
+  if (ev.key === 'n') { const s = nextUnread(); if (s) select(s.id); }
+  if (ev.key === 'd' && selected) toggleRead(selected);
+});
+
+render();
+if (state.phase === 'quiz') openQuiz();
+</script>
+</body>
+</html>
