@@ -1,0 +1,198 @@
+{
+  "title": "Retries, TTL cache, and request dedupe for getUser",
+  "summary": "getUser now shares one in-flight request between concurrent callers. fetchJson retries 429/502/503 with exponential backoff. Cache entries expire after 60s. Pay most attention to the failure paths: a rejected shared promise now fails every waiting caller at once, and retries multiply the latency of a failure.",
+  "nodes": [
+    {
+      "id": "dedupe",
+      "label": "In-flight dedupe in getUser",
+      "kind": "function",
+      "severity": "critical",
+      "summary": "Concurrent calls for the same id now share one promise.",
+      "explanation": "Before, two simultaneous `getUser(1)` calls both missed the cache and both hit the network. Now the first call stores its promise in `inflight`, and later callers return that same promise until it settles.\n\nThe `.finally` removes the entry on success **and** failure. A failed fetch is not cached, so the next call retries from scratch. Every caller that joined while the request was in flight sees the same rejection.\n\n- The cache check changed from `if (hit)` to `hit !== undefined`, so falsy values like `0` or `\"\"` are now real cache hits.\n- The order matters. The cache is checked first, then `inflight`, then the fetch starts.",
+      "hunks": [
+        {
+          "file": "src/api.js",
+          "lines": [
+            4,
+            18
+          ]
+        }
+      ]
+    },
+    {
+      "id": "retry",
+      "label": "Retry with backoff in fetchJson",
+      "kind": "function",
+      "severity": "critical",
+      "summary": "429, 502 and 503 are retried up to maxAttempts with exponential delay.",
+      "explanation": "Only statuses in `RETRYABLE` are retried. A 500 or 404 throws on the first attempt, as before.\n\nThe delay is `baseDelayMs * 2 ** (attempt - 1)`, so with defaults the waits are 200ms then 400ms. The third failure throws without waiting. A request that always returns 503 takes about 600ms plus three round trips to fail.\n\nNetwork errors (fetch itself rejecting) are **not** caught. They still propagate immediately and are not retried.",
+      "hunks": [
+        {
+          "file": "src/fetch.js"
+        }
+      ]
+    },
+    {
+      "id": "ttl",
+      "label": "60s TTL on the cache",
+      "kind": "module",
+      "severity": "high",
+      "summary": "Entries now store a timestamp and expire lazily on read.",
+      "explanation": "`set` stores `{ value, at }` instead of the raw value. `get` deletes and returns `undefined` when the entry is older than `TTL_MS`.\n\nExpiry is lazy. Nothing sweeps the map, so keys that are never read again stay in memory forever. The optional `now` parameter exists so tests can control time without mocking `Date`.",
+      "hunks": [
+        {
+          "file": "src/cache.js"
+        }
+      ]
+    },
+    {
+      "id": "test",
+      "label": "Dedupe test",
+      "kind": "test",
+      "severity": "medium",
+      "summary": "Asserts two concurrent getUser calls make one fetch.",
+      "explanation": "The test mocks global `fetch` and checks the call count. It covers the happy path only. It does not exercise retries, rejection fan-out, or TTL expiry.\n\nThe module-level cache is shared across tests in the same file, so a later test asking for id `1` would get a cache hit.",
+      "hunks": [
+        {
+          "file": "src/api.test.js"
+        }
+      ]
+    }
+  ],
+  "edges": [
+    {
+      "from": "dedupe",
+      "to": "retry",
+      "label": "calls"
+    },
+    {
+      "from": "dedupe",
+      "to": "ttl",
+      "label": "reads / writes"
+    },
+    {
+      "from": "test",
+      "to": "dedupe",
+      "label": "verifies"
+    }
+  ],
+  "questions": [
+    {
+      "id": "d1",
+      "nodeId": "dedupe",
+      "prompt": "Three callers request user 7 at the same moment and the request returns 503 every time. What do they see?",
+      "choices": [
+        "All three reject with the same error after the retries run out",
+        "The first rejects, the other two start fresh requests",
+        "All three resolve with undefined",
+        "Only the first caller retries; the others reject at once"
+      ],
+      "answer": 0,
+      "explanation": "Callers two and three return the same promise from `inflight`, so the one rejection fans out to all of them. Nobody starts a second request while the first is pending."
+    },
+    {
+      "id": "d2",
+      "nodeId": "dedupe",
+      "prompt": "A request for user 7 fails. One second later someone calls getUser(7) again. What happens?",
+      "choices": [
+        "It gets the cached error",
+        "A new fetch starts, because .finally removed the in-flight entry and errors are never cached",
+        "It returns the old rejected promise from inflight",
+        "It returns undefined"
+      ],
+      "answer": 1,
+      "explanation": "`.finally` runs on rejection too, deleting the `inflight` entry, and `cache.set` only runs in `.then`. So failures leave no trace and the next call fetches again."
+    },
+    {
+      "id": "d3",
+      "nodeId": "dedupe",
+      "prompt": "The API returns 0 for some user. Before this change, what did a second getUser call do?",
+      "choices": [
+        "Returned 0 from the cache",
+        "Fetched again, because `if (hit)` treated 0 as a miss",
+        "Threw an error",
+        "Returned undefined"
+      ],
+      "answer": 1,
+      "explanation": "The old check `if (hit)` is falsy for 0, so it refetched every time. The new `hit !== undefined` fixes that."
+    },
+    {
+      "id": "r1",
+      "nodeId": "retry",
+      "prompt": "With default options, the server returns 500 on every request. How many times is fetch called?",
+      "choices": [
+        "1",
+        "2",
+        "3",
+        "Until it succeeds"
+      ],
+      "answer": 0,
+      "explanation": "500 is not in `RETRYABLE` (only 429, 502, 503), so it throws on the first attempt."
+    },
+    {
+      "id": "r2",
+      "nodeId": "retry",
+      "prompt": "With defaults, the server returns 429 three times. How long does fetchJson spend sleeping before it throws?",
+      "choices": [
+        "0ms",
+        "600ms",
+        "1400ms",
+        "200ms"
+      ],
+      "answer": 1,
+      "explanation": "It sleeps after attempt 1 (200ms) and attempt 2 (400ms). Attempt 3 hits `attempt >= maxAttempts` and throws without sleeping, for 600ms in total."
+    },
+    {
+      "id": "r3",
+      "nodeId": "retry",
+      "prompt": "The DNS lookup fails and fetch() itself rejects. What does fetchJson do?",
+      "choices": [
+        "Retries up to maxAttempts",
+        "Rejects immediately with the network error",
+        "Returns null",
+        "Retries forever"
+      ],
+      "answer": 1,
+      "explanation": "There is no try/catch around `await fetch(url)`. Only HTTP status codes are checked, so network errors propagate on the first attempt."
+    },
+    {
+      "id": "t1",
+      "nodeId": "ttl",
+      "prompt": "A user is cached at t=0 and nobody asks for it again. What happens to that entry at t=5 minutes?",
+      "choices": [
+        "It's still in the map. Expiry only happens when get() reads it",
+        "A timer deleted it at t=60s",
+        "It was evicted when the map grew",
+        "set() overwrote it"
+      ],
+      "answer": 0,
+      "explanation": "Expiry is lazy. Only `get` checks the age and deletes. Unread keys stay in memory forever."
+    },
+    {
+      "id": "t2",
+      "nodeId": "ttl",
+      "prompt": "Why do get and set take an optional `now` argument?",
+      "choices": [
+        "So callers can backdate entries in production",
+        "So tests can control time without mocking Date",
+        "It is required by Map",
+        "To support time zones"
+      ],
+      "answer": 1,
+      "explanation": "Defaulting `now = Date.now()` keeps call sites unchanged while letting tests pass explicit timestamps."
+    },
+    {
+      "id": "t3",
+      "nodeId": "ttl",
+      "prompt": "What does the store hold for a key after this change?",
+      "choices": [
+        "The raw value",
+        "{ value, at } with the write timestamp",
+        "{ value, expiresAt }",
+        "A promise"
+      ],
+      "answer": 1,
+      "explanation": "`set` now stores `{ value, at: now }`, and `get` unwraps `.value`. Any other code reading the Map directly would now see the wrapper object."
+    }
+  ]
+}

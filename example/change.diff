@@ -1,0 +1,90 @@
+diff --git a/src/api.js b/src/api.js
+index d630ede..a9c98d9 100644
+--- a/src/api.js
++++ b/src/api.js
+@@ -1,10 +1,18 @@
+ import { fetchJson } from './fetch.js';
+ import * as cache from './cache.js';
+ 
+-export async function getUser(id) {
+-  const hit = cache.get(id);
+-  if (hit) return hit;
+-  const user = await fetchJson(`/users/${id}`);
+-  cache.set(id, user);
+-  return user;
++const inflight = new Map();
++
++export async function getUser(userId) {
++  const hit = cache.get(userId);
++  if (hit !== undefined) return hit;
++  if (inflight.has(userId)) return inflight.get(userId);
++  const p = fetchJson(`/users/${userId}`)
++    .then((user) => {
++      cache.set(userId, user);
++      return user;
++    })
++    .finally(() => inflight.delete(userId));
++  inflight.set(userId, p);
++  return p;
+ }
+diff --git a/src/api.test.js b/src/api.test.js
+new file mode 100644
+index 0000000..1fead37
+--- /dev/null
++++ b/src/api.test.js
+@@ -0,0 +1,9 @@
++import { test, mock } from 'node:test';
++import assert from 'node:assert';
++import { getUser } from './api.js';
++
++test('concurrent getUser calls share one request', async () => {
++  const f = mock.method(globalThis, 'fetch', async () => ({ ok: true, json: async () => ({ id: 1 }) }));
++  await Promise.all([getUser(1), getUser(1)]);
++  assert.strictEqual(f.mock.callCount(), 1);
++});
+diff --git a/src/cache.js b/src/cache.js
+index b4bc9ea..cea4c37 100644
+--- a/src/cache.js
++++ b/src/cache.js
+@@ -1,7 +1,16 @@
+ const store = new Map();
+-export function get(key) {
+-  return store.get(key);
++const TTL_MS = 60_000;
++
++export function get(key, now = Date.now()) {
++  const entry = store.get(key);
++  if (!entry) return undefined;
++  if (now - entry.at > TTL_MS) {
++    store.delete(key);
++    return undefined;
++  }
++  return entry.value;
+ }
+-export function set(key, value) {
+-  store.set(key, value);
++
++export function set(key, value, now = Date.now()) {
++  store.set(key, { value, at: now });
+ }
+diff --git a/src/fetch.js b/src/fetch.js
+index de50627..3a2e44c 100644
+--- a/src/fetch.js
++++ b/src/fetch.js
+@@ -1,5 +1,12 @@
+-export async function fetchJson(url) {
+-  const res = await fetch(url);
+-  if (!res.ok) throw new Error(`HTTP ${res.status}`);
+-  return res.json();
++const RETRYABLE = new Set([429, 502, 503]);
++
++export async function fetchJson(url, { maxAttempts = 3, baseDelayMs = 200 } = {}) {
++  for (let attempt = 1; ; attempt++) {
++    const res = await fetch(url);
++    if (res.ok) return res.json();
++    if (!RETRYABLE.has(res.status) || attempt >= maxAttempts) {
++      throw new Error(`HTTP ${res.status} after ${attempt} attempt(s)`);
++    }
++    await new Promise((r) => setTimeout(r, baseDelayMs * 2 ** (attempt - 1)));
++  }
+ }
